@@ -1,7 +1,7 @@
 /*
 	Author: Hossam Ehab - facebook.com/0xHossam
 	Title : Killer tool for EDR/AV Evasion --> IAT Obfuscation - Module stomping - DLL Unhooking & ETW Patching - Run payload without create a new thread
-	Date  : 3/8/2023
+	Date  : 8/3/2023
 
 */
 
