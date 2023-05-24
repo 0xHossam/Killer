@@ -142,7 +142,11 @@ void deObfuscate(char* cApi, int nSize)
 {
 	for (int i = 0; i < nSize; i++)
 	{
-		cApi[i] = cApi[i] ^ KEY;
+		// try to prevent particular weakness of single-byte encoding: 
+		// It lacks the ability to effectively hide from a user manually
+		// scanning encoded content with a hex editor.     
+		if (cApi[i] != 0 && cApi[i] != KEY)
+			cApi[i] = cApi[i] ^ KEY;
 	}
 }
 
