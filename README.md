@@ -52,6 +52,7 @@ https://antiscan.me/images/result/07OkIKKhpRsG.png
 # Important Notes
 
 * First thanks to Abdallah Mohammed for helping me to develop it ^_^  Follow him from here:
+  
         [+] https://www.facebook.com/abdallah.elsharif07
         [+] https://github.com/abdallah-elsharif
 * The tool is for educational purposes only
