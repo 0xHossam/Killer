@@ -37,6 +37,7 @@ And then you can handle your decryption function, It's not easy for script kiddi
 * Part 1 => https://medium.com/@0xHossam/av-edr-evasion-malware-development-933e50f47af5
 * Part 2 => https://medium.com/@0xHossam/av-edr-evasion-malware-development-p2-7a947f7db354
 * Part 3 => https://medium.com/@0xHossam/unhooking-memory-object-hiding-3229b75618f7
+* Part 4 => https://medium.com/@0xHossam/av-edr-evasion-malware-development-p-4-162662bb630e
 
 This is the result when running :
 
